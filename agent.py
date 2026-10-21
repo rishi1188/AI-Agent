@@ -43,7 +43,10 @@ MAX_ITERATIONS = 10  # bumped from 8 -- a full run now needs room for
 # A production-grade agent has to expect this and recover on its own
 # instead of crashing on the first hiccup.
 MAX_RETRIES = 4
-REQUEST_TIMEOUT_MS = 120_000  # 2 minutes per Gemini request
+# Per-request timeout. google-genai also sends this to Gemini as the
+# server-side deadline, so too low a value turns slow-but-fine replies
+# into 504 DEADLINE_EXCEEDED errors. Override with GEMINI_TIMEOUT_SECONDS.
+REQUEST_TIMEOUT_MS = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "300")) * 1000
 INITIAL_BACKOFF_SECONDS = 2
 
 # Override with the GEMINI_MODEL environment variable to try a
