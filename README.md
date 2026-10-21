@@ -59,7 +59,7 @@ python run_eval.py                       # run the full benchmark
 python -m pytest test_agent.py test_run_eval.py   # offline tests, no API key needed
 ```
 
-Set `GEMINI_MODEL` to try a different Gemini model.
+Set `GEMINI_MODEL` to try a different Gemini model (for example `gemini-flash-latest` if the default is overloaded), and `GEMINI_TIMEOUT_SECONDS` (default 300) to change how long one request may take.
 
 ## Benchmark
 
