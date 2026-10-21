@@ -140,12 +140,92 @@ def test_respects_iteration_cap_if_never_calling_propose_edit():
     fake_client = MagicMock()
     fake_client.models.generate_content.return_value = infinite
 
-    with patch("agent.genai.Client", return_value=fake_client), \
-         patch.dict(agent.TOOL_FUNCTIONS, {"read_file": lambda a: "nothing here"}):
+    with patch("agent.genai.Client", return_value=fake_client):
         result = agent.run_agent("this will never finish")
 
     assert fake_client.models.generate_content.call_count == agent.MAX_ITERATIONS
     assert result is None
+
+
+def test_refuses_to_edit_test_files(tmp_path):
+    """Rewriting the tests is the classic way for an agent to 'pass'
+    without fixing anything -- it must be refused, never verified."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "test_app.py").write_text("def test_x():\n    assert False\n")
+
+    cheat = make_response(
+        [make_function_call_part(
+            "propose_edit",
+            {"file": "test_app.py", "target_name": "test_x", "explanation": "x",
+             "fixed_code": "def test_x():\n    assert True\n"},
+            call_id="c1",
+        )]
+    )
+    done = make_response([make_text_part("Giving up.")])
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = [cheat, done]
+
+    with patch("agent.genai.Client", return_value=fake_client), \
+         patch("agent.verify_edit") as verify:
+        agent.run_agent("fix it", repo_path=str(repo))
+
+    verify.assert_not_called()
+    assert "assert False" in (repo / "test_app.py").read_text()
+    sent = fake_client.models.generate_content.call_args_list[1].kwargs["contents"]
+    fed_back = [p.function_response.response["result"] for t in sent
+                for p in getattr(t, "parts", []) if getattr(p, "function_response", None)]
+    assert any("test files is not allowed" in text for text in fed_back)
+
+
+def test_stops_cleanly_on_empty_model_response():
+    empty = SimpleNamespace(candidates=[SimpleNamespace(content=None)])
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = empty
+
+    with patch("agent.genai.Client", return_value=fake_client):
+        result = agent.run_agent("anything")
+
+    assert result is empty
+    assert fake_client.models.generate_content.call_count == 1
+
+
+# ---------------------------------------------------------------------
+# Tool scoping: every path resolves INSIDE the repo being fixed
+# ---------------------------------------------------------------------
+
+def test_read_file_resolves_against_repo_not_cwd(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("x = 1\n")
+
+    assert agent.read_file("app.py", str(repo)) == "1: x = 1\n"
+    assert "outside the repo" in agent.read_file("../secret.txt", str(repo))
+
+
+def test_resolve_in_repo_accepts_repo_prefixed_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo").mkdir()
+    expected = os.path.realpath(tmp_path / "demo" / "app.py")
+
+    assert agent.resolve_in_repo("demo", "app.py") == expected
+    assert agent.resolve_in_repo("demo", "demo/app.py") == expected
+    assert agent.resolve_in_repo("demo", "../app.py") is None
+
+
+def test_unknown_or_malformed_tool_calls_become_observations(tmp_path):
+    bad = make_response([make_function_call_part("read_file", {}, call_id="c1")])
+    done = make_response([make_text_part("ok")])
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = [bad, done]
+
+    with patch("agent.genai.Client", return_value=fake_client):
+        agent.run_agent("anything", repo_path=str(tmp_path))
+
+    sent = fake_client.models.generate_content.call_args_list[1].kwargs["contents"]
+    fed_back = [p.function_response.response["result"] for t in sent
+                for p in getattr(t, "parts", []) if getattr(p, "function_response", None)]
+    assert any("missing required argument" in text for text in fed_back)
 
 
 # ---------------------------------------------------------------------
@@ -247,6 +327,21 @@ def test_does_not_retry_non_rate_limit_client_errors():
 
     fake_client = MagicMock()
     fake_client.models.generate_content.side_effect = bad_request
+
+    with patch("agent.time.sleep"), pytest.raises(errors.ClientError):
+        agent.call_with_retry(fake_client, model="x", contents=[], config=None)
+
+    assert fake_client.models.generate_content.call_count == 1
+
+
+def test_does_not_retry_daily_quota_exhaustion():
+    from google.genai import errors
+
+    daily = errors.ClientError(
+        429, {"error": {"message": "quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier"}}, None
+    )
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = daily
 
     with patch("agent.time.sleep"), pytest.raises(errors.ClientError):
         agent.call_with_retry(fake_client, model="x", contents=[], config=None)

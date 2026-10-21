@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+chroma_db/
+coding_agent_sandbox_*/
+.DS_Store

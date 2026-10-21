@@ -41,7 +41,7 @@ def find_python_files(repo_path):
     return py_files
 
 
-def chunk_file(file_path):
+def chunk_file(file_path, repo_path=None):
     """
     Parse ONE Python file and pull out each top-level function and
     class as its own chunk of source code.
@@ -64,6 +64,9 @@ def chunk_file(file_path):
 
     source_lines = source.splitlines()
     chunks = []
+    # Store paths RELATIVE to the repo root, so the agent can pass them
+    # straight back to read_file / propose_edit for that same repo.
+    display_path = os.path.relpath(file_path, repo_path) if repo_path else file_path
 
     # NOTE: we use ast.iter_child_nodes() here, NOT ast.walk().
     # walk() would recurse into every nested level and return a
@@ -79,8 +82,8 @@ def chunk_file(file_path):
 
             chunks.append(
                 {
-                    "id": f"{file_path}::{node.name}::{start_line}",
-                    "file": file_path,
+                    "id": f"{display_path}::{node.name}::{start_line}",
+                    "file": display_path,
                     "name": node.name,
                     "type": type(node).__name__,  # "FunctionDef" or "ClassDef"
                     "code": code_snippet,
@@ -89,15 +92,27 @@ def chunk_file(file_path):
     return chunks
 
 
+def collect_chunks(repo_path):
+    """Scan + chunk every Python file in repo_path."""
+    all_chunks = []
+    for file_path in find_python_files(repo_path):
+        all_chunks.extend(chunk_file(file_path, repo_path))
+    return all_chunks
+
+
+def index_into(collection, chunks):
+    """Embed + store chunks in an existing Chroma collection."""
+    collection.add(
+        ids=[c["id"] for c in chunks],
+        documents=[c["code"] for c in chunks],
+        metadatas=[{"file": c["file"], "name": c["name"], "type": c["type"]} for c in chunks],
+    )
+
+
 def build_index(repo_path, db_path="./chroma_db"):
     """The full pipeline: scan -> chunk -> embed -> store."""
     print(f"Scanning {repo_path} for Python files...")
-    files = find_python_files(repo_path)
-    print(f"Found {len(files)} Python file(s).")
-
-    all_chunks = []
-    for file_path in files:
-        all_chunks.extend(chunk_file(file_path))
+    all_chunks = collect_chunks(repo_path)
     print(f"Extracted {len(all_chunks)} function/class chunk(s).")
 
     if not all_chunks:
@@ -113,18 +128,16 @@ def build_index(repo_path, db_path="./chroma_db"):
     print("Connecting to local Chroma database (this downloads a small")
     print("embedding model the very first time you run it)...")
     client = chromadb.PersistentClient(path=db_path)
+    # Start from an empty collection every time, so re-indexing (or
+    # indexing a different repo) never mixes in stale chunks.
+    try:
+        client.delete_collection("codebase")
+    except Exception:  # noqa: BLE001 -- collection didn't exist yet
+        pass
     collection = client.get_or_create_collection("codebase")
 
     print("Embedding and storing chunks...")
-    texts = [c["code"] for c in all_chunks]
-
-    collection.add(
-        ids=[c["id"] for c in all_chunks],
-        documents=texts,
-        metadatas=[
-            {"file": c["file"], "name": c["name"], "type": c["type"]} for c in all_chunks
-        ],
-    )
+    index_into(collection, all_chunks)
 
     print(f"Done. Indexed {len(all_chunks)} chunks into '{db_path}'.")
     return collection

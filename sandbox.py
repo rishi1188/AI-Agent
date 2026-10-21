@@ -23,6 +23,7 @@ import ast
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -95,7 +96,7 @@ def run_tests(sandbox_dir, timeout_seconds=30):
     """
     try:
         result = subprocess.run(
-            ["python", "-m", "pytest", sandbox_dir, "-v", "--tb=short"],
+            [sys.executable, "-m", "pytest", sandbox_dir, "-v", "--tb=short"],
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
