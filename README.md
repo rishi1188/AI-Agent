@@ -1,6 +1,8 @@
 # AI Bug-Fixing Agent
 
-[![tests](https://github.com/rishi1188/AI-Agent/actions/workflows/tests.yml/badge.svg)](https://github.com/rishi1188/AI-Agent/actions/workflows/tests.yml)
+[![tests](https://github.com/rishi1188/AI-Agent/actions/workflows/tests.yml/badge.svg)](https://github.com/rishi1188/AI-Agent/actions/workflows/tests.yml) [![Live demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://ai-agent-2fnscf3amfxbhnjgxvxuag.streamlit.app/)
+
+**[Try the live demo →](https://ai-agent-2fnscf3amfxbhnjgxvxuag.streamlit.app/)** Pick a sample bug, click Run, and watch the agent find, fix and verify it.
 
 An autonomous coding agent that finds and fixes bugs in Python code, and **proves each fix with your test suite before it touches a single file**.
 
@@ -59,7 +61,9 @@ flowchart LR
 
 Every run works on a temporary copy, so the sample files are never changed.
 
-**Deploy it free:** push to GitHub, create an app on [Streamlit Community Cloud](https://share.streamlit.io) with `streamlit_app.py` as the main file, and optionally add `GEMINI_API_KEY` (and `GEMINI_MODEL`, e.g. `gemini-flash-latest`) under the app's Secrets. The key stays on the server and is never shown in the page; visitors can still paste their own key, which takes priority. Note that every run without a visitor key uses your quota.
+**Live:** [ai-agent-2fnscf3amfxbhnjgxvxuag.streamlit.app](https://ai-agent-2fnscf3amfxbhnjgxvxuag.streamlit.app/)
+
+**Deploy your own:** push to GitHub, create an app on [Streamlit Community Cloud](https://share.streamlit.io) with `streamlit_app.py` as the main file, and optionally add `GEMINI_API_KEY` (and `GEMINI_MODEL`, e.g. `gemini-flash-latest`) under the app's Secrets. The key stays on the server and is never shown in the page; visitors can still paste their own key, which takes priority. Note that every run without a visitor key uses your quota.
 
 ## Quick start
 
