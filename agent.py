@@ -22,12 +22,14 @@ This repeats until Gemini calls propose_edit, or we hit MAX_ITERATIONS.
 import os
 import shutil
 import time
+import uuid
 
 import chromadb
 from google import genai
 from google.genai import types
 from google.genai import errors
 
+import indexer
 import sandbox
 
 MAX_ITERATIONS = 10  # bumped from 8 -- a full run now needs room for
@@ -43,50 +45,93 @@ MAX_ITERATIONS = 10  # bumped from 8 -- a full run now needs room for
 MAX_RETRIES = 4
 INITIAL_BACKOFF_SECONDS = 2
 
-# gemini-3-flash-preview is Google's newest model, but as a preview
-# model it gets less server capacity -- which is exactly the 503s
-# you've been hitting. Switching to gemini-2.5-flash (fully stable,
-# generally available) trades a bit of raw capability for much more
-# consistent availability while you're actively developing. Just
-# remember this generation is scheduled to retire mid-October 2026,
-# so revisit this choice before then.
-MODEL = "gemini-3.8-flash"
+# Override with the GEMINI_MODEL environment variable to try a
+# different model without touching the code.
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 
-# ---------- Tool implementations (identical to the Anthropic version) ----
+# ---------- Tool implementations ----------
+# Every tool is scoped to ONE target repo. Paths the model gives us are
+# resolved against that repo (never against the folder the agent happens
+# to be launched from), and anything that escapes the repo is refused.
 
-def search_codebase(query, db_path="./chroma_db", top_k=3):
-    """Find code chunks related to `query` by MEANING (same as step 1)."""
-    chroma_client = chromadb.PersistentClient(path=db_path)
-    collection = chroma_client.get_or_create_collection("codebase")
-    results = collection.query(query_texts=[query], n_results=top_k)
+def resolve_in_repo(repo_path, path):
+    """Map a path from the model onto a real path INSIDE repo_path, or
+    return None if it points outside the repo."""
+    repo_root = os.path.realpath(repo_path)
+    rel = os.path.normpath(path)
+    # The model often repeats the repo folder ("dummy_repo/app.py") --
+    # strip it so both spellings land on the same file.
+    prefix = os.path.normpath(repo_path)
+    if not os.path.isabs(rel) and rel.startswith(prefix + os.sep):
+        rel = os.path.relpath(rel, prefix)
+    full = os.path.realpath(os.path.join(repo_root, rel))
+    if full != repo_root and not full.startswith(repo_root + os.sep):
+        return None
+    return full
 
-    if not results["ids"][0]:
-        return "No matches found."
 
-    pieces = []
-    for i in range(len(results["ids"][0])):
-        meta = results["metadatas"][0][i]
-        code = results["documents"][0][i]
-        pieces.append(f"File: {meta['file']}\n{meta['type']} {meta['name']}:\n{code}")
-    return "\n\n---\n\n".join(pieces)
+def is_test_file(path):
+    name = os.path.basename(path)
+    return name.startswith("test_") or name.endswith("_test.py") or name == "conftest.py"
 
 
-def read_file(path):
+class CodebaseSearch:
+    """Semantic search over ONE repo. The index is built in memory the
+    first time it's needed, so every run searches only the repo it's
+    actually fixing -- never a stale index left over from another one."""
+
+    def __init__(self, repo_path):
+        self.repo_path = repo_path
+        self._collection = None
+
+    def _build(self):
+        chunks = indexer.collect_chunks(self.repo_path)
+        client = chromadb.EphemeralClient()
+        # Ephemeral clients share one in-memory store per process, so a
+        # unique name keeps runs (e.g. eval tasks) from seeing each other.
+        self._collection = client.create_collection(f"codebase_{uuid.uuid4().hex}")
+        if chunks:
+            indexer.index_into(self._collection, chunks)
+
+    def __call__(self, query, top_k=3):
+        if self._collection is None:
+            self._build()
+        count = self._collection.count()
+        if count == 0:
+            return "No Python functions or classes found in this repo."
+        results = self._collection.query(query_texts=[query], n_results=min(top_k, count))
+
+        pieces = []
+        for i in range(len(results["ids"][0])):
+            meta = results["metadatas"][0][i]
+            code = results["documents"][0][i]
+            pieces.append(f"File: {meta['file']}\n{meta['type']} {meta['name']}:\n{code}")
+        return "\n\n---\n\n".join(pieces)
+
+
+def read_file(path, repo_path="."):
     """Read a file's full contents WITH line numbers."""
-    if not os.path.exists(path):
+    full = resolve_in_repo(repo_path, path)
+    if full is None:
+        return f"Error: {path} is outside the repo being fixed."
+    if not os.path.isfile(full):
         return f"Error: file not found: {path}"
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    with open(full, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()
     return "".join(f"{i + 1}: {line}" for i, line in enumerate(lines))
 
 
-# NOTE: Gemini hands back `args` as a plain dict already (unlike some
-# APIs that give you a JSON *string* you'd need to parse yourself).
-TOOL_FUNCTIONS = {
-    "search_codebase": lambda args: search_codebase(args["query"]),
-    "read_file": lambda args: read_file(args["path"]),
-}
+def make_tool_functions(repo_path):
+    """The read-only tools, bound to one repo.
+
+    NOTE: Gemini hands back `args` as a plain dict already (unlike some
+    APIs that give you a JSON *string* you'd need to parse yourself)."""
+    search = CodebaseSearch(repo_path)
+    return {
+        "search_codebase": lambda args: search(args["query"]),
+        "read_file": lambda args: read_file(args["path"], repo_path),
+    }
 
 
 # ---------- Tool menu Gemini sees ----------
@@ -118,7 +163,7 @@ FUNCTION_DECLARATIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the file, e.g. dummy_repo/app.py"}
+                "path": {"type": "string", "description": "Path relative to the repo root, e.g. app.py"}
             },
             "required": ["path"],
         },
@@ -132,12 +177,13 @@ FUNCTION_DECLARATIONS = [
             "IMPORTANT: target_name must be a TOP-LEVEL function or class "
             "name in the file. If the bug is inside a METHOD, set "
             "target_name to the name of its ENCLOSING CLASS and give the "
-            "full corrected class (all its methods) as fixed_code."
+            "full corrected class (all its methods) as fixed_code. "
+            "Test files cannot be edited."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "file": {"type": "string", "description": "File to change, e.g. dummy_repo/app.py"},
+                "file": {"type": "string", "description": "File to change, relative to the repo root, e.g. app.py"},
                 "target_name": {
                     "type": "string",
                     "description": "Name of the top-level function or class being replaced.",
@@ -180,7 +226,10 @@ def call_with_retry(client, **kwargs):
             # request) or 403 (bad API key) will fail the exact same
             # way every time -- retrying those just wastes time, so we
             # re-raise immediately instead.
-            if e.code == 429 and attempt < MAX_RETRIES:
+            # A DAILY quota won't reset for hours, so waiting a few
+            # seconds can't help -- fail fast with the real reason.
+            daily_quota = "PerDay" in str(e)
+            if e.code == 429 and not daily_quota and attempt < MAX_RETRIES:
                 print(f"[Retry] Rate limited (429). "
                       f"Retrying in {backoff}s (attempt {attempt}/{MAX_RETRIES})...")
                 time.sleep(backoff)
@@ -233,6 +282,7 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
         "mistake twice."
     )
     config = types.GenerateContentConfig(tools=[TOOLS], system_instruction=system_prompt)
+    tool_functions = make_tool_functions(repo_path)
 
     contents = [types.Content(role="user", parts=[types.Part(text=task)])]
 
@@ -240,7 +290,11 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
         print(f"\n=== Round {round_num} ===")
         response = call_with_retry(client, model=MODEL, contents=contents, config=config)
 
-        candidate_content = response.candidates[0].content
+        candidate_content = response.candidates[0].content if response.candidates else None
+        if candidate_content is None or not candidate_content.parts:
+            # Empty or blocked reply (e.g. a safety filter) -- nothing to act on.
+            print("[Stop] Model returned an empty response.")
+            return response
         contents.append(candidate_content)  # Gemini's "model" turn goes back into history
 
         function_calls = [p.function_call for p in candidate_content.parts if p.function_call]
@@ -257,9 +311,33 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
             print(f"[Action] {call.name}({call.args})")
 
             if call.name == "propose_edit":
-                args = call.args
+                args = call.args or {}
+                missing = [k for k in ("file", "target_name", "fixed_code") if not args.get(k)]
+                target = resolve_in_repo(repo_path, args.get("file", ""))
+                if missing:
+                    refusal = f"propose_edit is missing required argument(s): {', '.join(missing)}."
+                elif target is None:
+                    refusal = f"{args['file']} is outside the repo being fixed."
+                elif is_test_file(target):
+                    # Guard against the classic agent shortcut: "fixing"
+                    # the bug by weakening the tests that catch it.
+                    refusal = "Editing test files is not allowed -- fix the code under test instead."
+                else:
+                    refusal = None
+                if refusal:
+                    print(f"[Refused] {refusal}")
+                    response_parts.append(
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                name=call.name, response={"result": refusal}, id=call.id
+                            )
+                        )
+                    )
+                    continue
+
+                rel_file = os.path.relpath(target, os.path.realpath(repo_path))
                 passed, message, sb = verify_edit(
-                    repo_path, args["file"], args["target_name"], args["fixed_code"]
+                    repo_path, rel_file, args["target_name"], args["fixed_code"]
                 )
 
                 if passed:
@@ -267,12 +345,12 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
                     # Copy the working fix from the sandbox back onto the
                     # real repo -- this is the only point where the
                     # agent's edit touches your actual files.
-                    real_file = os.path.join(repo_path, args["file"])
-                    sandboxed_file = os.path.join(sb, args["file"])
+                    real_file = os.path.join(repo_path, rel_file)
+                    sandboxed_file = os.path.join(sb, rel_file)
                     shutil.copyfile(sandboxed_file, real_file)
                     sandbox.cleanup_sandbox(sb)
                     print(f"[Done] Fix applied to {real_file}")
-                    print(f"Explanation: {args['explanation']}")
+                    print(f"Explanation: {args.get('explanation', '')}")
                     return response  # success -- stop the loop
 
                 print(f"\n[Verify] Tests FAILED. Feeding failure back to the agent.")
@@ -292,8 +370,13 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
                 )
                 continue
 
-            tool_fn = TOOL_FUNCTIONS.get(call.name)
-            result_text = tool_fn(call.args) if tool_fn else f"Unknown tool: {call.name}"
+            tool_fn = tool_functions.get(call.name)
+            try:
+                result_text = tool_fn(call.args or {}) if tool_fn else f"Unknown tool: {call.name}"
+            except KeyError as e:
+                result_text = f"Error: {call.name} is missing required argument {e}."
+            except Exception as e:  # noqa: BLE001 -- a tool error is an observation, not a crash
+                result_text = f"Error while running {call.name}: {e}"
             print(f"[Observation] {result_text[:200]}...")
 
             # Built directly (not via Part.from_function_response) so we
@@ -318,9 +401,9 @@ if __name__ == "__main__":
     import sys
 
     default_task = (
-        "The login method in dummy_repo/app.py has a bug: it crashes "
+        "The login method in app.py has a bug: it crashes "
         "instead of returning False when the username doesn't exist. "
-        "There's a test suite at dummy_repo/test_app.py -- find the bug, "
+        "There's a test suite at test_app.py -- find the bug, "
         "propose a fix, and make sure all tests pass."
     )
     task = " ".join(sys.argv[1:]) or default_task
@@ -329,3 +412,5 @@ if __name__ == "__main__":
     except errors.ServerError as e:
         print(f"\nGemini is still unavailable after {MAX_RETRIES} retries ({e.code}: {e.message}).")
         print("This is Google's server, not your code -- wait a few minutes and try again.")
+    except errors.ClientError as e:
+        print(f"\nGemini rejected the request ({e.code}): {e.message}")
