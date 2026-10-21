@@ -133,6 +133,10 @@ def test_attempt_count_reflects_number_of_propose_edit_calls(tmp_path, capsys):
         results = run_eval.run_evaluation(tasks=[task_a], transcript_dir=str(tmp_path / "transcripts"))
 
     assert results[0]["attempts"] == 2
+    # Output is shown live AND saved to the transcript.
+    assert "[Verify] Tests FAILED." in capsys.readouterr().out
+    saved = (tmp_path / "transcripts" / "task_a.txt").read_text()
+    assert "[Verify] Tests FAILED." in saved
 
 
 if __name__ == "__main__":
