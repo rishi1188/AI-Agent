@@ -9,6 +9,7 @@ the agent does).
 Run with:  python -m pytest test_run_eval.py -v
 """
 
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -54,10 +55,13 @@ def test_resolve_rate_and_restore_after_solved_and_unsolved_tasks(tmp_path):
 
     with patch("agent.run_agent", side_effect=fake_run_agent):
         results = run_eval.run_evaluation(
-            tasks=[task_a, task_b], transcript_dir=str(tmp_path / "transcripts")
+            tasks=[task_a, task_b], transcript_dir=str(tmp_path / "transcripts"),
+            results_path=str(tmp_path / "results.json"),
         )
 
     solved = {r["name"]: r["solved"] for r in results}
+    saved = json.loads((tmp_path / "results.json").read_text())
+    assert (saved["solved"], saved["total"]) == (1, 2)
     assert solved == {"task_a": True, "task_b": False}
 
     # Both tasks should be back to their ORIGINAL buggy state after the
@@ -99,7 +103,8 @@ def test_one_crashed_task_does_not_stop_the_rest(tmp_path):
 
     with patch("agent.run_agent", side_effect=fake_run_agent):
         results = run_eval.run_evaluation(
-            tasks=[task_a, task_b], transcript_dir=str(tmp_path / "transcripts")
+            tasks=[task_a, task_b], transcript_dir=str(tmp_path / "transcripts"),
+            results_path=str(tmp_path / "results.json"),
         )
 
     by_name = {r["name"]: r for r in results}
@@ -130,7 +135,10 @@ def test_attempt_count_reflects_number_of_propose_edit_calls(tmp_path, capsys):
         return None
 
     with patch("agent.run_agent", side_effect=fake_run_agent):
-        results = run_eval.run_evaluation(tasks=[task_a], transcript_dir=str(tmp_path / "transcripts"))
+        results = run_eval.run_evaluation(
+            tasks=[task_a], transcript_dir=str(tmp_path / "transcripts"),
+            results_path=str(tmp_path / "results.json"),
+        )
 
     assert results[0]["attempts"] == 2
     # Output is shown live AND saved to the transcript.

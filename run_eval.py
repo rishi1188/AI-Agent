@@ -23,6 +23,7 @@ problem.
 """
 
 import io
+import json
 import os
 import sys
 import time
@@ -118,7 +119,24 @@ def _tests_pass(repo_dir):
     return passed
 
 
-def run_evaluation(tasks=TASKS, transcript_dir="eval_transcripts"):
+def save_results(results, path):
+    """Write results as JSON so the web UI's Benchmark tab can show them."""
+    solved = sum(1 for r in results if r["solved"])
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "model": agent.MODEL,
+                "run_at": time.strftime("%Y-%m-%d %H:%M"),
+                "solved": solved,
+                "total": len(results),
+                "tasks": results,
+            },
+            f,
+            indent=2,
+        )
+
+
+def run_evaluation(tasks=TASKS, transcript_dir="eval_transcripts", results_path="eval_results.json"):
     os.makedirs(transcript_dir, exist_ok=True)
     results = []
 
@@ -161,6 +179,8 @@ def run_evaluation(tasks=TASKS, transcript_dir="eval_transcripts"):
         )
 
     print_summary(results)
+    if results_path:
+        save_results(results, results_path)
     return results
 
 

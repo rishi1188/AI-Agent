@@ -1,5 +1,7 @@
 # AI Bug-Fixing Agent
 
+[![tests](https://github.com/rishi1188/AI-Agent/actions/workflows/tests.yml/badge.svg)](https://github.com/rishi1188/AI-Agent/actions/workflows/tests.yml)
+
 An autonomous coding agent that finds and fixes bugs in Python code, and **proves each fix with your test suite before it touches a single file**.
 
 You describe the bug in plain English. The agent searches the codebase by meaning, reads the relevant files, proposes a fix, and tests it in an isolated sandbox. If the tests fail, it reads the failure and tries again. Only a fix that passes every test is written back.
@@ -46,6 +48,19 @@ flowchart LR
 - **No cheating.** The agent may not edit test files, so it can only pass by fixing the code under test.
 - **Resilient API calls.** Exponential backoff on 5xx and per-minute 429 errors. Bad requests and exhausted daily quotas fail fast instead of retrying uselessly.
 
+## Web UI: Bug Fix Studio
+
+`streamlit run streamlit_app.py` opens a web app where you can:
+
+- pick a sample bug, or paste your own `app.py` and `test_app.py`
+- describe the bug and watch each round stream in live: searches, file reads, proposed fixes, and test failures fed back to the agent
+- review the verified fix as a diff, with its test results, and download it as a `.patch`
+- see the latest benchmark results in the **Benchmark** tab, read from `eval_results.json`
+
+Every run works on a temporary copy, so the sample files are never changed.
+
+**Deploy it free:** push to GitHub, create an app on [Streamlit Community Cloud](https://share.streamlit.io) with `streamlit_app.py` as the main file, and optionally add `GEMINI_API_KEY` under the app's Secrets. Without a secret, visitors paste their own key in the sidebar.
+
 ## Quick start
 
 Requires Python 3.10+ and a free Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
@@ -54,7 +69,8 @@ Requires Python 3.10+ and a free Gemini API key from [Google AI Studio](https://
 pip install -r requirements.txt
 export GEMINI_API_KEY="your-key"        # Windows: setx GEMINI_API_KEY "your-key"
 
-python agent.py                          # fix the demo bug in dummy_repo/
+streamlit run streamlit_app.py           # open the web UI
+python agent.py                          # fix the demo bug in dummy_repo/ from the terminal
 python run_eval.py                       # run the full benchmark
 python -m pytest test_agent.py test_run_eval.py   # offline tests, no API key needed
 ```
@@ -74,13 +90,13 @@ Six hand-built tasks, each a different classic bug pattern with its own failing 
 | `task_05_mutable_default` | Mutable default argument leaks state between calls |
 | `task_06_falsy_vs_none` | `not value` treats `0` and `""` as missing |
 
-`run_eval.py` restores each task's buggy code after every run, so results are reproducible, and writes a transcript per task to `eval_transcripts/`.
+`run_eval.py` restores each task's buggy code after every run, so results are reproducible, and writes a transcript per task to `eval_transcripts/` and a summary to `eval_results.json`, which the web UI's Benchmark tab displays.
 
 Results: _to be added after the next full benchmark run._
 
 ## Tests
 
-16 offline tests mock the Gemini API, so they run in seconds with no key. They cover the loop's stop and retry decisions, failure feedback, the iteration cap, test-file protection, path scoping, retry and backoff rules, and one end-to-end run through a real sandbox and a real `pytest`.
+18 offline tests mock the Gemini API, so they run in seconds with no key, and GitHub Actions runs them on every push. They cover the loop's stop and retry decisions, failure feedback, the iteration cap, test-file protection, path scoping, retry and backoff rules, the step events the UI renders, and one end-to-end run through a real sandbox and a real `pytest`.
 
 ## Limitations and roadmap
 
@@ -88,7 +104,7 @@ Results: _to be added after the next full benchmark run._
 - The sandbox is a temp-folder copy. Running it in a Docker container with no network is the next step for stronger isolation.
 - The benchmark is small and hand-built. Moving to SWE-bench Lite needs per-task environments, which is why the official harness uses Docker.
 
-Planned: a web UI that streams each agent step live and shows the verified fix as a diff, support for more model providers with side-by-side benchmark results, a larger benchmark, and CI.
+Planned: support for more model providers with side-by-side benchmark results, a larger benchmark, and a FastAPI + React version of the UI.
 
 ## License
 
