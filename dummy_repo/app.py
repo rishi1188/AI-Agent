@@ -6,9 +6,7 @@ class UserManager:
 
     def login(self, username, password):
         user = self.db.find_user(username)
-        if user and user.check_password(password):
-            return True
-        return False
+        return user.check_password(password)  # BUG: crashes if user is None
 
 
 def calculate_total(items):
