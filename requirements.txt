@@ -2,3 +2,4 @@ chromadb>=1.5,<2
 google-genai>=2.32,<3
 httpx>=0.28,<1
 pytest>=9,<10
+streamlit>=1.50,<2

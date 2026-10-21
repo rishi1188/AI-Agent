@@ -147,6 +147,39 @@ def test_respects_iteration_cap_if_never_calling_propose_edit():
     assert result is None
 
 
+def test_emits_step_events_and_a_diff_for_the_ui(tmp_path):
+    """The web UI renders the run from on_event callbacks, so a passing
+    run must report its steps and end with a 'fixed' event + diff."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("def add(a, b):\n    return a - b\n")
+    (repo / "test_app.py").write_text(
+        "import sys, os\nsys.path.insert(0, os.path.dirname(__file__))\n"
+        "from app import add\ndef test_add():\n    assert add(2, 3) == 5\n"
+    )
+    read = make_response([make_function_call_part("read_file", {"path": "app.py"}, call_id="c1")])
+    fix = make_response(
+        [make_function_call_part(
+            "propose_edit",
+            {"file": "app.py", "target_name": "add", "explanation": "use +",
+             "fixed_code": "def add(a, b):\n    return a + b\n"},
+            call_id="c2",
+        )]
+    )
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = [read, fix]
+    events = []
+
+    with patch("agent.genai.Client", return_value=fake_client):
+        agent.run_agent("fix add()", repo_path=str(repo), on_event=events.append)
+
+    kinds = [e["kind"] for e in events]
+    assert kinds == ["round", "action", "observation", "round", "action", "fixed"]
+    fixed = events[-1]
+    assert fixed["rounds"] == 2 and fixed["explanation"] == "use +"
+    assert "-    return a - b" in fixed["diff"] and "+    return a + b" in fixed["diff"]
+
+
 def test_refuses_to_edit_test_files(tmp_path):
     """Rewriting the tests is the classic way for an agent to 'pass'
     without fixing anything -- it must be refused, never verified."""

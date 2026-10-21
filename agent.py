@@ -19,6 +19,7 @@ How tool calling works here, in plain words:
 This repeats until Gemini calls propose_edit, or we hit MAX_ITERATIONS.
 """
 
+import difflib
 import os
 import shutil
 import time
@@ -276,9 +277,30 @@ def verify_edit(repo_path, file_relative_path, target_name, fixed_code):
     return False, test_output, None
 
 
-def run_agent(task, repo_path="dummy_repo", system_prompt=None):
-    """The core Thought -> Action -> Observation -> Verify loop."""
-    api_key = os.environ.get("GEMINI_API_KEY")
+def make_diff(before, after, path):
+    """Unified diff of one file, the way `git diff` would show it."""
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True), after.splitlines(keepends=True),
+            fromfile=f"a/{path}", tofile=f"b/{path}",
+        )
+    )
+
+
+def run_agent(task, repo_path="dummy_repo", system_prompt=None, on_event=None,
+              api_key=None, model=None, max_rounds=MAX_ITERATIONS):
+    """The core Thought -> Action -> Observation -> Verify loop.
+
+    `on_event`, if given, is called with one dict per step (round,
+    thought, action, observation, refused, verify_failed, fixed,
+    gave_up) -- that's how the web UI shows the run live. The console
+    output stays the same either way."""
+    def emit(kind, **data):
+        if on_event:
+            on_event({"kind": kind, **data})
+
+    model = model or MODEL
+    api_key = api_key or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise SystemExit(
             "Missing GEMINI_API_KEY environment variable.\n"
@@ -305,14 +327,16 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
 
     contents = [types.Content(role="user", parts=[types.Part(text=task)])]
 
-    for round_num in range(1, MAX_ITERATIONS + 1):
+    for round_num in range(1, max_rounds + 1):
         print(f"\n=== Round {round_num} ===")
-        response = call_with_retry(client, model=MODEL, contents=contents, config=config)
+        emit("round", round=round_num)
+        response = call_with_retry(client, model=model, contents=contents, config=config)
 
         candidate_content = response.candidates[0].content if response.candidates else None
         if candidate_content is None or not candidate_content.parts:
             # Empty or blocked reply (e.g. a safety filter) -- nothing to act on.
             print("[Stop] Model returned an empty response.")
+            emit("gave_up", reason="The model returned an empty response.")
             return response
         contents.append(candidate_content)  # Gemini's "model" turn goes back into history
 
@@ -320,14 +344,17 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
         for p in candidate_content.parts:
             if p.text and p.text.strip():
                 print(f"[Thought] {p.text.strip()}")
+                emit("thought", text=p.text.strip())
 
         if not function_calls:
             # Plain text answer, no tool call -- Gemini is done (or stuck).
+            emit("gave_up", reason="The model stopped without proposing a passing fix.")
             return response
 
         response_parts = []
         for call in function_calls:
             print(f"[Action] {call.name}({call.args})")
+            emit("action", tool=call.name, args=dict(call.args or {}))
 
             if call.name == "propose_edit":
                 args = call.args or {}
@@ -345,6 +372,7 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
                     refusal = None
                 if refusal:
                     print(f"[Refused] {refusal}")
+                    emit("refused", reason=refusal)
                     response_parts.append(
                         types.Part(
                             function_response=types.FunctionResponse(
@@ -366,14 +394,22 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
                     # agent's edit touches your actual files.
                     real_file = os.path.join(repo_path, rel_file)
                     sandboxed_file = os.path.join(sb, rel_file)
+                    with open(real_file, encoding="utf-8") as f:
+                        before = f.read()
                     shutil.copyfile(sandboxed_file, real_file)
                     sandbox.cleanup_sandbox(sb)
+                    with open(real_file, encoding="utf-8") as f:
+                        after = f.read()
                     print(f"[Done] Fix applied to {real_file}")
                     print(f"Explanation: {args.get('explanation', '')}")
+                    emit("fixed", file=rel_file, explanation=args.get("explanation", ""),
+                         diff=make_diff(before, after, rel_file), test_output=message,
+                         rounds=round_num)
                     return response  # success -- stop the loop
 
                 print(f"\n[Verify] Tests FAILED. Feeding failure back to the agent.")
                 print(message[:400])
+                emit("verify_failed", test_output=message)
                 # This is the key reliability moment: instead of crashing
                 # or giving up, the failure becomes an OBSERVATION the
                 # agent gets to read and react to, just like any other
@@ -397,6 +433,7 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
             except Exception as e:  # noqa: BLE001 -- a tool error is an observation, not a crash
                 result_text = f"Error while running {call.name}: {e}"
             print(f"[Observation] {result_text[:200]}...")
+            emit("observation", tool=call.name, text=result_text)
 
             # Built directly (not via Part.from_function_response) so we
             # can set `id` explicitly -- required for Gemini 3 to match
@@ -412,7 +449,8 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
 
         contents.append(types.Content(role="user", parts=response_parts))
 
-    print(f"\nHit the {MAX_ITERATIONS}-round cap without a passing fix.")
+    print(f"\nHit the {max_rounds}-round cap without a passing fix.")
+    emit("gave_up", reason=f"Hit the {max_rounds}-round cap without a passing fix.")
     return None
 
 
