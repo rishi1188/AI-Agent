@@ -24,6 +24,7 @@ problem.
 
 import io
 import os
+import sys
 import time
 from contextlib import redirect_stdout
 
@@ -95,6 +96,20 @@ TASKS = [
 ]
 
 
+class _Tee(io.StringIO):
+    """Capture the agent's output for the transcript while still showing
+    it live, so a long run never looks frozen."""
+
+    def __init__(self, console):
+        super().__init__()
+        self.console = console
+
+    def write(self, text):
+        self.console.write(text)
+        self.console.flush()
+        return super().write(text)
+
+
 def _tests_pass(repo_dir):
     """Reuse sandbox.run_tests directly against the real repo dir (not
     a sandbox copy) -- this is the ground truth check of whether the
@@ -114,7 +129,7 @@ def run_evaluation(tasks=TASKS, transcript_dir="eval_transcripts"):
         with open(app_path, "r", encoding="utf-8") as f:
             original_code = f.read()  # so we can restore it after this run
 
-        transcript = io.StringIO()
+        transcript = _Tee(sys.stdout)
         start = time.time()
         crashed = None
         try:

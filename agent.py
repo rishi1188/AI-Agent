@@ -43,6 +43,7 @@ MAX_ITERATIONS = 10  # bumped from 8 -- a full run now needs room for
 # A production-grade agent has to expect this and recover on its own
 # instead of crashing on the first hiccup.
 MAX_RETRIES = 4
+REQUEST_TIMEOUT_MS = 120_000  # 2 minutes per Gemini request
 INITIAL_BACKOFF_SECONDS = 2
 
 # Override with the GEMINI_MODEL environment variable to try a
@@ -86,6 +87,7 @@ class CodebaseSearch:
         self._collection = None
 
     def _build(self):
+        print("[Index] Building search index (the first run downloads a small embedding model)...")
         chunks = indexer.collect_chunks(self.repo_path)
         client = chromadb.EphemeralClient()
         # Ephemeral clients share one in-memory store per process, so a
@@ -270,7 +272,10 @@ def run_agent(task, repo_path="dummy_repo", system_prompt=None):
             '  setx GEMINI_API_KEY "your-key-here"\n'
             "Then open a NEW terminal window and try again."
         )
-    client = genai.Client(api_key=api_key)
+    # Without a timeout, one stalled request can hang the whole run.
+    client = genai.Client(
+        api_key=api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS)
+    )
 
     system_prompt = system_prompt or (
         "You are a careful coding assistant. You have tools to search and "
