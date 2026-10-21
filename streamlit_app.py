@@ -53,13 +53,16 @@ def test_single_value():
 TOOL_ICONS = {"search_codebase": "🔎", "read_file": "📄", "propose_edit": "🧪"}
 
 
-def default_api_key():
+def server_setting(name, default=""):
+    """Read a value from Streamlit secrets or the environment. These stay
+    on the server: never pass them into a widget, or they're sent to
+    every visitor's browser."""
     try:
-        if "GEMINI_API_KEY" in st.secrets:
-            return st.secrets["GEMINI_API_KEY"]
+        if name in st.secrets:
+            return st.secrets[name]
     except Exception:  # noqa: BLE001 -- no secrets file is fine
         pass
-    return os.environ.get("GEMINI_API_KEY", "")
+    return os.environ.get(name, default)
 
 
 def read(path):
@@ -288,10 +291,15 @@ def about_tab():
 with st.sidebar:
     st.title("🛠️ Bug Fix Studio")
     st.caption("An AI agent that fixes Python bugs and proves each fix with tests.")
-    api_key = st.text_input("Gemini API key", value=default_api_key(), type="password",
+    server_key = server_setting("GEMINI_API_KEY")
+    # The field always starts empty: a visitor's own key wins, otherwise
+    # the server's key is used without ever being shown in the page.
+    own_key = st.text_input("Gemini API key", type="password",
+                            placeholder="Using the app's key" if server_key else "Paste your key",
                             help="Free key: https://aistudio.google.com/app/apikey. "
                                  "It is only used for this session.")
-    model = st.text_input("Model", value=agent.MODEL,
+    api_key = own_key or server_key
+    model = st.text_input("Model", value=server_setting("GEMINI_MODEL", agent.MODEL),
                           help="Try gemini-flash-latest if the default is overloaded.")
     max_rounds = st.slider("Max rounds", 3, 15, agent.MAX_ITERATIONS)
 
