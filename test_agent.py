@@ -334,6 +334,22 @@ def test_does_not_retry_non_rate_limit_client_errors():
     assert fake_client.models.generate_content.call_count == 1
 
 
+def test_retries_on_dropped_connection_then_succeeds():
+    import httpx
+
+    success_response = make_response([make_text_part("All good.")])
+    reset = httpx.ReadError("[WinError 10054] An existing connection was forcibly closed")
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = [reset, success_response]
+
+    with patch("agent.time.sleep"):
+        result = agent.call_with_retry(fake_client, model="x", contents=[], config=None)
+
+    assert result is success_response
+    assert fake_client.models.generate_content.call_count == 2
+
+
 def test_does_not_retry_daily_quota_exhaustion():
     from google.genai import errors
 

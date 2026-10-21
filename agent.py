@@ -25,6 +25,7 @@ import time
 import uuid
 
 import chromadb
+import httpx
 from google import genai
 from google.genai import types
 from google.genai import errors
@@ -241,6 +242,16 @@ def call_with_retry(client, **kwargs):
                 backoff *= 2
             else:
                 raise
+        except httpx.TransportError as e:
+            # The connection itself failed (reset by the remote host,
+            # dropped Wi-Fi, a read timeout) before any HTTP status came
+            # back. Usually transient, so treat it like a 5xx.
+            if attempt == MAX_RETRIES:
+                raise
+            print(f"[Retry] Network error ({type(e).__name__}: {e}). "
+                  f"Retrying in {backoff}s (attempt {attempt}/{MAX_RETRIES})...")
+            time.sleep(backoff)
+            backoff *= 2
 
 
 def verify_edit(repo_path, file_relative_path, target_name, fixed_code):
@@ -422,3 +433,6 @@ if __name__ == "__main__":
         print("This is Google's server, not your code -- wait a few minutes and try again.")
     except errors.ClientError as e:
         print(f"\nGemini rejected the request ({e.code}): {e.message}")
+    except httpx.TransportError as e:
+        print(f"\nCould not reach Gemini after {MAX_RETRIES} attempts ({type(e).__name__}: {e}).")
+        print("Check your internet connection, VPN, firewall or antivirus, then try again.")
