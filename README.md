@@ -59,7 +59,7 @@ flowchart LR
 
 Every run works on a temporary copy, so the sample files are never changed.
 
-**Deploy it free:** push to GitHub, create an app on [Streamlit Community Cloud](https://share.streamlit.io) with `streamlit_app.py` as the main file, and optionally add `GEMINI_API_KEY` under the app's Secrets. Without a secret, visitors paste their own key in the sidebar.
+**Deploy it free:** push to GitHub, create an app on [Streamlit Community Cloud](https://share.streamlit.io) with `streamlit_app.py` as the main file, and optionally add `GEMINI_API_KEY` (and `GEMINI_MODEL`, e.g. `gemini-flash-latest`) under the app's Secrets. The key stays on the server and is never shown in the page; visitors can still paste their own key, which takes priority. Note that every run without a visitor key uses your quota.
 
 ## Quick start
 
